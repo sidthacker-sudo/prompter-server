@@ -1,20 +1,44 @@
 # score_server.py
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-import re, uvicorn, os
+import re, uvicorn, os, time
 from anthropic import Anthropic
+from collections import defaultdict
 
 app = FastAPI()
+
+# Restrict CORS to Chrome extension origins only
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # local dev
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origin_regex=r"^chrome-extension://[a-z]+$",  # Only allow Chrome extensions
+    allow_methods=["POST"],  # Only POST requests needed
+    allow_headers=["Content-Type"],
+    max_age=3600,
 )
+
+# Simple rate limiter (10 requests per minute per IP)
+rate_limit_store = defaultdict(list)
+RATE_LIMIT = 10
+RATE_WINDOW = 60  # seconds
+
+def check_rate_limit(ip: str):
+    now = time.time()
+    # Clean old requests
+    rate_limit_store[ip] = [req_time for req_time in rate_limit_store[ip] if now - req_time < RATE_WINDOW]
+
+    if len(rate_limit_store[ip]) >= RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+
+    rate_limit_store[ip].append(now)
 
 # Environment API key is optional - we can receive it from request
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# Health check endpoint
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "service": "prompt-optimizer-api"}
 
 class ScoreReq(BaseModel):
     text: str
@@ -144,16 +168,18 @@ def rewrite_prompt_simple(p: str, goal: str) -> str:
     )
 
 @app.post("/score")
-def score(req: ScoreReq):
+def score(req: ScoreReq, request: Request):
     """Score a prompt and return LLM-powered improvement suggestions."""
+    check_rate_limit(request.client.host)
     goal = detect_goal(req.text)
     s = score_prompt(req.text)
     rw = rewrite_prompt_with_llm(req.text, goal, req.api_key)
     return {"score": s, "rewrite": rw, "goal": goal}
 
 @app.post("/suggest-next")
-def suggest_next(req: SuggestNextReq):
+def suggest_next(req: SuggestNextReq, request: Request):
     """Suggest the next logical prompts based on conversation context."""
+    check_rate_limit(request.client.host)
     key = req.api_key or ANTHROPIC_API_KEY
 
     if not key:
@@ -227,8 +253,9 @@ Return ONLY these two numbered prompts, no preamble."""
         }
 
 @app.post("/infer-metadata")
-def infer_metadata(req: InferMetadataReq):
+def infer_metadata(req: InferMetadataReq, request: Request):
     """Infer title and category for a prompt."""
+    check_rate_limit(request.client.host)
     key = req.api_key or ANTHROPIC_API_KEY
 
     if not key:
