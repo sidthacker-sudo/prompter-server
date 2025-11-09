@@ -5,7 +5,6 @@ WORKDIR /app
 # Copy only server files
 COPY requirements.txt .
 COPY score_server.py .
-COPY Procfile .
 
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -13,5 +12,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Expose port
 EXPOSE 8000
 
-# Start command
-CMD uvicorn score_server:app --host 0.0.0.0 --port $PORT
+# Start command - use shell form to expand $PORT
+CMD ["sh", "-c", "uvicorn score_server:app --host 0.0.0.0 --port ${PORT:-8000}"]
